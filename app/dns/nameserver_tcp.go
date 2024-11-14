@@ -78,6 +78,31 @@ func NewTCPLocalNameServer(url *url.URL, queryStrategy QueryStrategy) (*TCPNameS
 	return s, nil
 }
 
+// NewTCPLocalNameServer creates DNS over TCP client object for local resolving
+func NewTCPUnixNameServer(url *url.URL, queryStrategy QueryStrategy) (*TCPNameServer, error) {
+    udsPath := url.String()[11:]
+	errors.LogDebug(context.Background(), "tcp+unix test version for mika : " + url.String() + " -> " + udsPath)
+    dest := net.UnixDestination(net.DomainAddress(udsPath))
+
+    s := &TCPNameServer{
+    	destination:   &dest,
+    	ips:           make(map[string]*record),
+    	pub:           pubsub.NewService(),
+    	name:          "TCPU//" + udsPath,
+    	queryStrategy: queryStrategy,
+    }
+    s.cleanup = &task.Periodic{
+    	Interval: time.Minute,
+    	Execute:  s.Cleanup,
+    }
+
+	s.dial = func(ctx context.Context) (net.Conn, error) {
+		return internet.DialSystem(ctx, *s.destination, nil)
+	}
+
+    return s, nil
+}
+
 func baseTCPNameServer(url *url.URL, prefix string, queryStrategy QueryStrategy) (*TCPNameServer, error) {
 	port := net.Port(53)
 	if url.Port() != "" {

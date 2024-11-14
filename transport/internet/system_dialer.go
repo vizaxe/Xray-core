@@ -118,6 +118,10 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		}
 	}
 
+	if dest.Network == net.Network_UNIX {
+	    udsAddr := net.UnixAddr{Name: dest.NetAddr(), Net: "unix"}
+	    return dialer.DialContext(ctx, "unix", udsAddr.String())
+	}
 	return dialer.DialContext(ctx, dest.Network.SystemString(), dest.NetAddr())
 }
 

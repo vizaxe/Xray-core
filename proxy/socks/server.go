@@ -84,6 +84,14 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			return s.httpServer.ProcessWithFirstbyte(ctx, network, conn, dispatcher, firstbyte...)
 		}
 		return s.processTCP(ctx, conn, dispatcher, firstbyte)
+	case net.Network_UNIX:
+		firstbyte := make([]byte, 1)
+		conn.Read(firstbyte)
+		if firstbyte[0] != 5 && firstbyte[0] != 4 { // Check if it is Socks5/4/4a
+			errors.LogDebug(ctx, "Not Socks request, try to parse as HTTP request")
+			return s.httpServer.ProcessWithFirstbyte(ctx, network, conn, dispatcher, firstbyte...)
+		}
+		return s.processUNIX(ctx, conn, dispatcher, firstbyte)
 	case net.Network_UDP:
 		return s.handleUDPPayload(ctx, conn, dispatcher)
 	default:
@@ -295,6 +303,77 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			udpServer.Dispatch(currentPacketCtx, *dest, payload)
 		}
 	}
+}
+
+
+func (s *Server) processUNIX(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, firstbyte []byte) error {
+	plcy := s.policy()
+	if err := conn.SetReadDeadline(time.Now().Add(plcy.Timeouts.Handshake)); err != nil {
+		errors.LogInfoInner(ctx, err, "failed to set deadline")
+	}
+
+	inbound := session.InboundFromContext(ctx)
+	if inbound == nil || !inbound.Gateway.IsValid() {
+		return errors.New("inbound gateway not specified")
+	}
+
+	svrSession := &ServerSession{
+		config:       s.config,
+		address:      inbound.Gateway.Address,
+		port:         inbound.Gateway.Port,
+		localAddress: net.DomainAddress(conn.LocalAddr().String()),
+	}
+
+	// Firstbyte is for forwarded conn from SOCKS inbound
+	// Because it needs first byte to choose protocol
+	// We need to add it back
+	reader := &buf.BufferedReader{
+		Reader: buf.NewReader(conn),
+		Buffer: buf.MultiBuffer{buf.FromBytes(firstbyte)},
+	}
+	request, err := svrSession.Handshake(reader, conn)
+	if err != nil {
+		if inbound.Source.IsValid() {
+			log.Record(&log.AccessMessage{
+				From:   inbound.Source,
+				To:     "",
+				Status: log.AccessRejected,
+				Reason: err,
+			})
+		}
+		return errors.New("failed to read request").Base(err)
+	}
+	if request.User != nil {
+		inbound.User.Email = request.User.Email
+	}
+
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		errors.LogInfoInner(ctx, err, "failed to clear deadline")
+	}
+
+	if request.Command == protocol.RequestCommandTCP {
+		dest := request.Destination()
+		errors.LogInfo(ctx, "TCP Connect request to ", dest)
+		if inbound.Source.IsValid() {
+			ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
+				From:   inbound.Source,
+				To:     dest,
+				Status: log.AccessAccepted,
+				Reason: "",
+			})
+		}
+
+		return s.transport(ctx, reader, conn, dest, dispatcher, inbound)
+	}
+
+	if request.Command == protocol.RequestCommandUDP {
+		if s.udpFilter != nil {
+			s.udpFilter.Add(conn.RemoteAddr())
+		}
+		return s.handleUDP(conn)
+	}
+
+	return nil
 }
 
 func init() {
