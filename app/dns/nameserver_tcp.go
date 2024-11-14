@@ -81,7 +81,6 @@ func NewTCPLocalNameServer(url *url.URL, queryStrategy QueryStrategy) (*TCPNameS
 // NewTCPLocalNameServer creates DNS over TCP client object for local resolving
 func NewTCPUnixNameServer(url *url.URL, queryStrategy QueryStrategy) (*TCPNameServer, error) {
     udsPath := url.String()[11:]
-	errors.LogDebug(context.Background(), "tcp+unix test version for mika : " + url.String() + " -> " + udsPath)
     dest := net.UnixDestination(net.DomainAddress(udsPath))
 
     s := &TCPNameServer{
