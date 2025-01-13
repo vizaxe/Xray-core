@@ -58,7 +58,7 @@ func NewServer(ctx context.Context, dest net.Destination, dispatcher routing.Dis
 			return NewTCPUnixNameServer(u, queryStrategy)
 		case strings.EqualFold(u.String(), "fakedns"):
 			var fd dns.FakeDNSEngine
-			core.RequireFeatures(ctx, func(fdns dns.FakeDNSEngine) { // FakeDNSEngine is optional
+			core.RequireFeatures(ctx, func(fdns dns.FakeDNSEngine) {
 				fd = fdns
 			})
 			return NewFakeDNSServer(fd), nil
