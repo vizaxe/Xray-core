@@ -16,16 +16,23 @@ var cmdAddRules = &base.Command{
 	Short:       "Add routing rules",
 	Long: `
 Add routing rules to Xray.
+
 Arguments:
-	-s, -server 
+	<c1.json> [c2.json]...
+		The configs with the rules to be added. Must be in the xray config format and must have the "routing" field
+
+	-s, -server <server:port>
 		The API server address. Default 127.0.0.1:8080
-	-t, -timeout
+
+	-t, -timeout <seconds>
 		Timeout seconds to call API. Default 3
+
 	-append
-		append or replace config. Default false
+		Append to the existing configuration instead of replacing it. Default false
 
 Example:
-    {{.Exec}} {{.LongName}} --server=127.0.0.1:8080 c1.json c2.json
+
+	{{.Exec}} {{.LongName}} --server=127.0.0.1:8080 c1.json c2.json
 `,
 	Run: executeAddRules,
 }
@@ -58,6 +65,11 @@ func executeAddRules(cmd *base.Command, args []string) {
 		if err != nil {
 			base.Fatalf("failed to decode %s: %s", arg, err)
 		}
+
+		if conf.RouterConfig == nil {
+			base.Fatalf("failed to add routing rule: config did not have \"routing\" field")
+		}
+
 		rcs = append(rcs, *conf.RouterConfig)
 	}
 	if len(rcs) == 0 {

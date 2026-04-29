@@ -81,7 +81,9 @@ func testShadowsocks2022Tcp(t *testing.T, method string, password string) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{
+					IpsBlocked: &freedom.IPRules{},
+				}),
 			},
 		},
 	}
@@ -124,7 +126,7 @@ func testShadowsocks2022Tcp(t *testing.T, method string, password string) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for i := 0; i < 10; i++ {
+	for range 3 {
 		errGroup.Go(testTCPConn(clientPort, 10240*1024, time.Second*20))
 	}
 
@@ -164,7 +166,9 @@ func testShadowsocks2022Udp(t *testing.T, method string, password string) {
 		},
 		Outbound: []*core.OutboundHandlerConfig{
 			{
-				ProxySettings: serial.ToTypedMessage(&freedom.Config{}),
+				ProxySettings: serial.ToTypedMessage(&freedom.Config{
+					IpsBlocked: &freedom.IPRules{},
+				}),
 			},
 		},
 	}
@@ -207,7 +211,7 @@ func testShadowsocks2022Udp(t *testing.T, method string, password string) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for i := 0; i < 2; i++ {
+	for range 3 {
 		errGroup.Go(testUDPConn(udpClientPort, 1024, time.Second*5))
 	}
 

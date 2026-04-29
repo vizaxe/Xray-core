@@ -67,7 +67,7 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 	var err error
 	config.SecretKey, err = ParseWireGuardKey(c.SecretKey)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid WireGuard secret key: %w", err)
 	}
 
 	if c.Address == nil {
@@ -126,7 +126,11 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 func ParseWireGuardKey(str string) (string, error) {
 	var err error
 
-	if len(str)%2 == 0 {
+	if str == "" {
+		return "", errors.New("key must not be empty")
+	}
+
+	if len(str) == 64 {
 		_, err = hex.DecodeString(str)
 		if err == nil {
 			return str, nil

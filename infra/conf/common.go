@@ -23,6 +23,7 @@ func (v StringList) Len() int {
 	return len(v)
 }
 
+// UnmarshalJSON implements encoding/json.Unmarshaler.UnmarshalJSON
 func (v *StringList) UnmarshalJSON(data []byte) error {
 	var strarray []string
 	if err := json.Unmarshal(data, &strarray); err == nil {
@@ -43,10 +44,12 @@ type Address struct {
 	net.Address
 }
 
-func (v Address) MarshalJSON() ([]byte, error) {
+// MarshalJSON implements encoding/json.Marshaler.MarshalJSON
+func (v *Address) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.Address.String())
 }
 
+// UnmarshalJSON implements encoding/json.Unmarshaler.UnmarshalJSON
 func (v *Address) UnmarshalJSON(data []byte) error {
 	var rawStr string
 	if err := json.Unmarshal(data, &rawStr); err != nil {
@@ -81,6 +84,7 @@ func (v Network) Build() net.Network {
 
 type NetworkList []Network
 
+// UnmarshalJSON implements encoding/json.Unmarshaler.UnmarshalJSON
 func (v *NetworkList) UnmarshalJSON(data []byte) error {
 	var strarray []Network
 	if err := json.Unmarshal(data, &strarray); err == nil {
@@ -169,6 +173,19 @@ func (v *PortRange) Build() *net.PortRange {
 	}
 }
 
+// MarshalJSON implements encoding/json.Marshaler.MarshalJSON
+func (v *PortRange) MarshalJSON() ([]byte, error) {
+	return json.Marshal(v.String())
+}
+
+func (port *PortRange) String() string {
+	if port.From == port.To {
+		return strconv.Itoa(int(port.From))
+	} else {
+		return fmt.Sprintf("%d-%d", port.From, port.To)
+	}
+}
+
 // UnmarshalJSON implements encoding/json.Unmarshaler.UnmarshalJSON
 func (v *PortRange) UnmarshalJSON(data []byte) error {
 	port, err := parseIntPort(data)
@@ -201,6 +218,25 @@ func (list *PortList) Build() *net.PortList {
 		portList.Range = append(portList.Range, r.Build())
 	}
 	return portList
+}
+
+// MarshalJSON implements encoding/json.Marshaler.MarshalJSON
+func (v *PortList) MarshalJSON() ([]byte, error) {
+	portStr := v.String()
+	port, err := strconv.Atoi(portStr)
+	if err == nil {
+		return json.Marshal(port)
+	} else {
+		return json.Marshal(portStr)
+	}
+}
+
+func (v PortList) String() string {
+	ports := []string{}
+	for _, port := range v.Range {
+		ports = append(ports, port.String())
+	}
+	return strings.Join(ports, ",")
 }
 
 // UnmarshalJSON implements encoding/json.Unmarshaler.UnmarshalJSON
@@ -259,7 +295,8 @@ type Int32Range struct {
 	To    int32
 }
 
-func (v Int32Range) MarshalJSON() ([]byte, error) {
+// MarshalJSON implements encoding/json.Marshaler.MarshalJSON
+func (v *Int32Range) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.String())
 }
 
@@ -271,6 +308,7 @@ func (v Int32Range) String() string {
 	}
 }
 
+// UnmarshalJSON implements encoding/json.Unmarshaler.UnmarshalJSON
 func (v *Int32Range) UnmarshalJSON(data []byte) error {
 	defer v.ensureOrder()
 	var str string

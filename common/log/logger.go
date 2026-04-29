@@ -36,7 +36,7 @@ type serverityLogger struct {
 func NewLogger(logWriterCreator WriterCreator) Handler {
 	return &generalLogger{
 		creator: logWriterCreator,
-		buffer:  make(chan Message, 16),
+		buffer:  make(chan Message, 128),
 		access:  semaphore.New(1),
 		done:    done.New(),
 	}
@@ -46,7 +46,7 @@ func ReplaceWithSeverityLogger(serverity Severity) {
 	w := CreateStdoutLogWriter()
 	g := &generalLogger{
 		creator: w,
-		buffer:  make(chan Message, 16),
+		buffer:  make(chan Message, 128),
 		access:  semaphore.New(1),
 		done:    done.New(),
 	}
@@ -146,7 +146,7 @@ func (w *fileLogWriter) Close() error {
 func CreateStdoutLogWriter() WriterCreator {
 	return func() Writer {
 		return &consoleLogWriter{
-			logger: log.New(os.Stdout, "", log.Ldate|log.Ltime),
+			logger: log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds),
 		}
 	}
 }
@@ -155,7 +155,7 @@ func CreateStdoutLogWriter() WriterCreator {
 func CreateStderrLogWriter() WriterCreator {
 	return func() Writer {
 		return &consoleLogWriter{
-			logger: log.New(os.Stderr, "", log.Ldate|log.Ltime),
+			logger: log.New(os.Stderr, "", log.Ldate|log.Ltime|log.Lmicroseconds),
 		}
 	}
 }
@@ -174,7 +174,7 @@ func CreateFileLogWriter(path string) (WriterCreator, error) {
 		}
 		return &fileLogWriter{
 			file:   file,
-			logger: log.New(file, "", log.Ldate|log.Ltime),
+			logger: log.New(file, "", log.Ldate|log.Ltime|log.Lmicroseconds),
 		}
 	}, nil
 }

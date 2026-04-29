@@ -5,15 +5,17 @@ import (
 
 	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/common"
-	"github.com/xtls/xray-core/common/dice"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport/internet"
+	"google.golang.org/protobuf/proto"
 )
 
 func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter) {
@@ -42,13 +44,28 @@ func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter)
 }
 
 type AlwaysOnInboundHandler struct {
-	proxy   proxy.Inbound
-	workers []worker
-	mux     *mux.Server
-	tag     string
+	proxyConfig    interface{}
+	receiverConfig *proxyman.ReceiverConfig
+	proxy          proxy.Inbound
+	workers        []worker
+	mux            *mux.Server
+	tag            string
 }
 
 func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *proxyman.ReceiverConfig, proxyConfig interface{}) (*AlwaysOnInboundHandler, error) {
+	sniffingRequest, err := proxyman.BuildSniffingRequest(receiverConfig.SniffingSettings)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set tag and sniffing config in context before creating proxy
+	// This allows proxies like TUN to access these settings
+	ctx = session.ContextWithInbound(ctx, &session.Inbound{Tag: tag})
+	if receiverConfig.SniffingSettings != nil {
+		ctx = session.ContextWithContent(ctx, &session.Content{
+			SniffingRequest: sniffingRequest,
+		})
+	}
 	rawProxy, err := common.CreateObject(ctx, proxyConfig)
 	if err != nil {
 		return nil, err
@@ -59,9 +76,11 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 	}
 
 	h := &AlwaysOnInboundHandler{
-		proxy: p,
-		mux:   mux.NewServer(ctx),
-		tag:   tag,
+		receiverConfig: receiverConfig,
+		proxyConfig:    proxyConfig,
+		proxy:          p,
+		mux:            mux.NewServer(ctx),
+		tag:            tag,
 	}
 
 	uplinkCounter, downlinkCounter := getStatCounter(core.MustFromContext(ctx), tag)
@@ -87,23 +106,25 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 		}
 		mss.SocketSettings.ReceiveOriginalDestAddress = true
 	}
-	if pl == nil || net.HasNetwork(nl, net.Network_UNIX) {
-		errors.LogDebug(ctx, "creating unix domain socket worker on ", address)
+	if pl == nil {
+		if net.HasNetwork(nl, net.Network_UNIX) {
+			errors.LogDebug(ctx, "creating unix domain socket worker on ", address)
 
-		worker := &dsWorker{
-			address:         address,
-			proxy:           p,
-			stream:          mss,
-			tag:             tag,
-			dispatcher:      h.mux,
-			sniffingConfig:  receiverConfig.GetEffectiveSniffingSettings(),
-			uplinkCounter:   uplinkCounter,
-			downlinkCounter: downlinkCounter,
-			ctx:             ctx,
+			worker := &dsWorker{
+				address:         address,
+				proxy:           p,
+				stream:          mss,
+				tag:             tag,
+				dispatcher:      h.mux,
+				sniffingRequest: sniffingRequest,
+				uplinkCounter:   uplinkCounter,
+				downlinkCounter: downlinkCounter,
+				ctx:             ctx,
+			}
+			h.workers = append(h.workers, worker)
 		}
-        h.workers = append(h.workers, worker)
-	} else {
-// 	if pl != nil {
+	}
+	if pl != nil {
 		for _, pr := range pl.Range {
 			for port := pr.From; port <= pr.To; port++ {
 				if net.HasNetwork(nl, net.Network_TCP) {
@@ -117,7 +138,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 						recvOrigDest:    receiverConfig.ReceiveOriginalDestination,
 						tag:             tag,
 						dispatcher:      h.mux,
-						sniffingConfig:  receiverConfig.GetEffectiveSniffingSettings(),
+						sniffingRequest: sniffingRequest,
 						uplinkCounter:   uplinkCounter,
 						downlinkCounter: downlinkCounter,
 						ctx:             ctx,
@@ -132,7 +153,7 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 						address:         address,
 						port:            net.Port(port),
 						dispatcher:      h.mux,
-						sniffingConfig:  receiverConfig.GetEffectiveSniffingSettings(),
+						sniffingRequest: sniffingRequest,
 						uplinkCounter:   uplinkCounter,
 						downlinkCounter: downlinkCounter,
 						stream:          mss,
@@ -164,18 +185,11 @@ func (h *AlwaysOnInboundHandler) Close() error {
 		errs = append(errs, worker.Close())
 	}
 	errs = append(errs, h.mux.Close())
+	errs = append(errs, common.Close(h.proxy))
 	if err := errors.Combine(errs...); err != nil {
 		return errors.New("failed to close all resources").Base(err)
 	}
 	return nil
-}
-
-func (h *AlwaysOnInboundHandler) GetRandomInboundProxy() (interface{}, net.Port, int) {
-	if len(h.workers) == 0 {
-		return nil, 0, 0
-	}
-	w := h.workers[dice.Roll(len(h.workers))]
-	return w.Proxy(), w.Port(), 9999
 }
 
 func (h *AlwaysOnInboundHandler) Tag() string {
@@ -184,4 +198,17 @@ func (h *AlwaysOnInboundHandler) Tag() string {
 
 func (h *AlwaysOnInboundHandler) GetInbound() proxy.Inbound {
 	return h.proxy
+}
+
+// ReceiverSettings implements inbound.Handler.
+func (h *AlwaysOnInboundHandler) ReceiverSettings() *serial.TypedMessage {
+	return serial.ToTypedMessage(h.receiverConfig)
+}
+
+// ProxySettings implements inbound.Handler.
+func (h *AlwaysOnInboundHandler) ProxySettings() *serial.TypedMessage {
+	if v, ok := h.proxyConfig.(proto.Message); ok {
+		return serial.ToTypedMessage(v)
+	}
+	return nil
 }

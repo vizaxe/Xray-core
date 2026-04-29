@@ -4,10 +4,10 @@ package session // import "github.com/xtls/xray-core/common/session"
 import (
 	"context"
 	"math/rand"
-	"sync"
 
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/signal"
@@ -37,6 +37,8 @@ func ExportIDToError(ctx context.Context) errors.ExportOption {
 type Inbound struct {
 	// Source address of the inbound connection.
 	Source net.Destination
+	// Local address of the inbound connection.
+	Local net.Destination
 	// Gateway address.
 	Gateway net.Destination
 	// Tag of the inbound proxy that handles the connection.
@@ -45,9 +47,11 @@ type Inbound struct {
 	Name string
 	// User is the user that authenticates for the inbound. May be nil if the protocol allows anonymous traffic.
 	User *protocol.MemoryUser
-	// Conn is actually internet.Connection. May be nil.
+	// VlessRoute is the user-sent VLESS UUID's 7th<<8 | 8th bytes.
+	VlessRoute net.Port
+	// Used by splice copy. Conn is actually internet.Connection. May be nil.
 	Conn net.Conn
-	// Timer of the inbound buf copier. May be nil.
+	// Used by splice copy. Timer of the inbound buf copier. May be nil.
 	Timer *signal.ActivityTimer
 	// CanSpliceCopy is a property for this connection
 	// 1 = can, 2 = after processing protocol info should be able to, 3 = cannot
@@ -66,36 +70,35 @@ type Outbound struct {
 	Tag string
 	// Name of the outbound proxy that handles the connection.
 	Name string
-	// Conn is actually internet.Connection. May be nil. It is currently nil for outbound with proxySettings
+	// Unused. Conn is actually internet.Connection. May be nil. It is currently nil for outbound with proxySettings
 	Conn net.Conn
 	// CanSpliceCopy is a property for this connection
 	// 1 = can, 2 = after processing protocol info should be able to, 3 = cannot
 	CanSpliceCopy int
 }
 
-// SniffingRequest controls the behavior of content sniffing.
+// SniffingRequest controls the behavior of content sniffing. They are from inbound config. Read-only
 type SniffingRequest struct {
-	ExcludeForDomain               []string
+	ExcludeForDomain               geodata.DomainMatcher
+	ExcludeForIP                   geodata.IPMatcher
 	OverrideDestinationForProtocol []string
 	Enabled                        bool
 	MetadataOnly                   bool
 	RouteOnly                      bool
 }
 
-// Content is the metadata of the connection content.
+// Content is the metadata of the connection content. Mainly used for routing.
 type Content struct {
 	// Protocol of current content.
 	Protocol string
 
 	SniffingRequest SniffingRequest
 
+	// HTTP traffic sniffed headers
 	Attributes map[string]string
 
+	// SkipDNSResolve is set from DNS module. the DOH remote server maybe a domain name, this prevents cycle resolving dead loop
 	SkipDNSResolve bool
-
-	mu sync.Mutex
-
-	isLocked bool
 }
 
 // Sockopt is the settings for socket connection.
@@ -104,22 +107,8 @@ type Sockopt struct {
 	Mark int32
 }
 
-// Some how when using mux, there will be a same ctx between different requests
-// This will cause problem as it's designed for single request, like concurrent map writes
-// Add a Mutex as a temp solution
-
 // SetAttribute attaches additional string attributes to content.
 func (c *Content) SetAttribute(name string, value string) {
-	if c.isLocked {
-		errors.LogError(context.Background(), "Multiple goroutines are tring to access one routing content, tring to write ", name, ":", value)
-	}
-	c.mu.Lock()
-	c.isLocked = true
-	defer func() {
-		c.isLocked = false
-		c.mu.Unlock()
-	}()
-
 	if c.Attributes == nil {
 		c.Attributes = make(map[string]string)
 	}
@@ -128,24 +117,8 @@ func (c *Content) SetAttribute(name string, value string) {
 
 // Attribute retrieves additional string attributes from content.
 func (c *Content) Attribute(name string) string {
-	c.mu.Lock()
-	c.isLocked = true
-	defer func() {
-		c.isLocked = false
-		c.mu.Unlock()
-	}()
 	if c.Attributes == nil {
 		return ""
 	}
 	return c.Attributes[name]
-}
-
-func (c *Content) AttributeLen() int {
-	c.mu.Lock()
-	c.isLocked = true
-	defer func() {
-		c.isLocked = false
-		c.mu.Unlock()
-	}()
-	return len(c.Attributes)
 }

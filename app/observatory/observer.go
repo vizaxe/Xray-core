@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal/done"
 	"github.com/xtls/xray-core/common/task"
+	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
@@ -32,7 +34,7 @@ type Observer struct {
 
 	finished *done.Instance
 
-	ohm outbound.Manager
+	ohm        outbound.Manager
 	dispatcher routing.Dispatcher
 }
 
@@ -69,7 +71,7 @@ func (o *Observer) background() {
 
 		outbounds := hs.Select(o.config.SubjectSelector)
 
-		o.updateStatus(outbounds)
+		o.clearRemovedOutbounds(outbounds)
 
 		sleepTime := time.Second * 10
 		if o.config.ProbeInterval != 0 {
@@ -110,11 +112,19 @@ func (o *Observer) background() {
 	}
 }
 
-func (o *Observer) updateStatus(outbounds []string) {
+func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
-	// TODO should remove old inbound that is removed
-	_ = outbounds
+	if len(o.status) == 0 {
+		return
+	}
+	var pruned []*OutboundStatus
+	for _, status := range o.status {
+		if slices.Contains(outbounds, status.OutboundTag) {
+			pruned = append(pruned, status)
+		}
+	}
+	o.status = pruned
 }
 
 func (o *Observer) probe(outbound string) ProbeResult {
@@ -162,7 +172,9 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		if o.config.ProbeUrl != "" {
 			probeURL = o.config.ProbeUrl
 		}
-		response, err := httpClient.Get(probeURL)
+		req, _ := http.NewRequest(http.MethodGet, probeURL, nil)
+		utils.TryDefaultHeadersWith(req.Header, "nav")
+		response, err := httpClient.Do(req)
 		if err != nil {
 			return errors.New("outbound failed to relay connection").Base(err)
 		}
@@ -226,9 +238,9 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		return nil, errors.New("Cannot get depended features").Base(err)
 	}
 	return &Observer{
-		config: config,
-		ctx:    ctx,
-		ohm:    outboundManager,
+		config:     config,
+		ctx:        ctx,
+		ohm:        outboundManager,
 		dispatcher: dispatcher,
 	}, nil
 }

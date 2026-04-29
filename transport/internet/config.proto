@@ -23,6 +23,16 @@ enum DomainStrategy {
   FORCE_IP64 = 10;
 }
 
+enum AddressPortStrategy {
+  None = 0;
+  SrvPortOnly = 1;
+  SrvAddressOnly = 2;
+  SrvPortAndAddress = 3;
+  TxtPortOnly = 4;
+  TxtAddressOnly = 5;
+  TxtPortAndAddress = 6;
+}
+
 message TransportConfig {
   // Transport protocol name.
   string protocol_name = 3;
@@ -46,7 +56,34 @@ message StreamConfig {
   // Transport security settings. They can be either TLS or REALITY.
   repeated xray.common.serial.TypedMessage security_settings = 4;
 
+  repeated xray.common.serial.TypedMessage udpmasks = 10;
+  repeated xray.common.serial.TypedMessage tcpmasks = 11;
+
+  QuicParams quic_params = 12;
+
   SocketConfig socket_settings = 6;
+}
+
+message UdpHop {
+  repeated uint32 ports = 1;
+  int64 interval_min = 2;
+  int64 interval_max = 3;
+}
+
+message QuicParams {
+  string congestion = 1;
+  string bbr_profile = 2;
+  uint64 brutal_up = 3;
+  uint64 brutal_down = 4;
+  UdpHop udp_hop = 5;
+  uint64 init_stream_receive_window = 6;
+  uint64 max_stream_receive_window = 7;
+  uint64 init_conn_receive_window = 8;
+  uint64 max_conn_receive_window = 9;
+  int64 max_idle_timeout = 10;
+  int64 keep_alive_period = 11;
+  bool disable_path_mtu_discovery = 12;
+  int64 max_incoming_streams = 13;
 }
 
 message ProxyConfig {
@@ -55,10 +92,12 @@ message ProxyConfig {
 }
 
 message CustomSockopt {
-  string level = 1;
-  string opt = 2;
-  string value = 3;
-  string type = 4;
+  string system = 1;
+  string network = 2;
+  string level = 3;
+  string opt = 4;
+  string value = 5;
+  string type = 6;
 }
 
 // SocketConfig is options to be applied on network sockets.
@@ -116,4 +155,17 @@ message SocketConfig {
   bool tcp_mptcp = 19;
 
   repeated CustomSockopt customSockopt = 20;
+
+  AddressPortStrategy address_port_strategy = 21;
+
+  HappyEyeballsConfig happy_eyeballs = 22;
+
+  repeated string trusted_x_forwarded_for = 23;
+}
+
+message HappyEyeballsConfig {
+  bool prioritize_ipv6 = 1;
+  uint32 interleave = 2;
+  uint64 try_delayMs = 3;
+  uint32 max_concurrent_try = 4;
 }
