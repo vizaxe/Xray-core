@@ -281,7 +281,6 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 	}
 }
 
-
 func (s *Server) processUNIX(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, firstbyte []byte) error {
 	plcy := s.policy()
 	if err := conn.SetReadDeadline(time.Now().Add(plcy.Timeouts.Handshake)); err != nil {
@@ -339,7 +338,16 @@ func (s *Server) processUNIX(ctx context.Context, conn stat.Connection, dispatch
 			})
 		}
 
-		return s.transport(ctx, reader, conn, dest, dispatcher, inbound)
+		if inbound.CanSpliceCopy == 2 {
+			inbound.CanSpliceCopy = 1
+		}
+		if err := dispatcher.DispatchLink(ctx, dest, &transport.Link{
+			Reader: reader,
+			Writer: buf.NewWriter(conn)},
+		); err != nil {
+			return errors.New("failed to dispatch request").Base(err)
+		}
+		return nil
 	}
 
 	if request.Command == protocol.RequestCommandUDP {

@@ -71,6 +71,21 @@ func NewTCPLocalNameServer(url *url.URL, disableCache bool, serveStale bool, ser
 	return s, nil
 }
 
+// NewUnixNameServer creates DNS over TCP client via Unix Domain Socket for local resolving.
+func NewUnixNameServer(url *url.URL, disableCache bool, serveStale bool, serveExpiredTTL uint32, clientIP net.IP) (*TCPNameServer, error) {
+	dest := net.UnixDestination(net.ParseAddress(url.Path))
+	s := &TCPNameServer{
+		cacheController: NewCacheController("TCPUNIX//"+url.Path, disableCache, serveStale, serveExpiredTTL),
+		destination:     &dest,
+		clientIP:        clientIP,
+	}
+	s.dial = func(ctx context.Context) (net.Conn, error) {
+		return internet.DialSystem(ctx, dest, nil)
+	}
+	errors.LogInfo(context.Background(), "DNS: created Unix Domain Socket TCP client initialized for ", url.String())
+	return s, nil
+}
+
 func baseTCPNameServer(url *url.URL, prefix string, disableCache bool, serveStale bool, serveExpiredTTL uint32, clientIP net.IP) (*TCPNameServer, error) {
 	port := net.Port(53)
 	if url.Port() != "" {
