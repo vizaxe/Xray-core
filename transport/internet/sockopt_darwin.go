@@ -135,7 +135,6 @@ func applyOutboundSocketOptions(network string, address string, fd uintptr, conf
 
 	if config.Interface != "" {
 		iface, err := net.InterfaceByName(config.Interface)
-
 		if err != nil {
 			return errors.New("failed to get interface ", config.Interface).Base(err)
 		}
@@ -163,7 +162,7 @@ func applyOutboundSocketOptions(network string, address string, fd uintptr, conf
 			if !strings.HasPrefix(network, custom.Network) {
 				continue
 			}
-			var level = 0x6 // default TCP
+			level := 0x6 // default TCP
 			var opt int
 			if len(custom.Opt) == 0 {
 				return errors.New("No opt!")
@@ -226,7 +225,6 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 
 	if config.Interface != "" {
 		iface, err := net.InterfaceByName(config.Interface)
-
 		if err != nil {
 			return errors.New("failed to get interface ", config.Interface).Base(err)
 		}
@@ -260,7 +258,7 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 			if !strings.HasPrefix(network, custom.Network) {
 				continue
 			}
-			var level = 0x6 // default TCP
+			level := 0x6 // default TCP
 			var opt int
 			if len(custom.Opt) == 0 {
 				return errors.New("No opt!")
@@ -290,14 +288,14 @@ func applyInboundSocketOptions(network string, fd uintptr, config *SocketConfig)
 
 func setReuseAddr(fd uintptr) error {
 	if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
-		return errors.New("failed to set SO_REUSEADDR").Base(err).AtWarning()
+		return errors.New("failed to set SO_REUSEADDR").Base(err)
 	}
 	return nil
 }
 
 func setReusePort(fd uintptr) error {
 	if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
-		return errors.New("failed to set SO_REUSEPORT").Base(err).AtWarning()
+		return errors.New("failed to set SO_REUSEPORT").Base(err)
 	}
 	return nil
 }

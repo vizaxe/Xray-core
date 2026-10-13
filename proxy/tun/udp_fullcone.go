@@ -11,11 +11,6 @@ import (
 	"github.com/xtls/xray-core/common/net"
 )
 
-type packet struct {
-	data []byte
-	dest *net.Destination
-}
-
 // sub-handler specifically for udp connections under main handler
 type udpConnectionHandler struct {
 	sync.RWMutex
@@ -38,17 +33,17 @@ func newUdpConnectionHandler(handleConnection func(conn net.Conn, dest net.Desti
 
 // HandlePacket handles UDP packets coming from tun, to forward to the dispatcher
 // this custom handler support FullCone NAT of returning packets, binding connection only by the source addr:port
-func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destination, data []byte) {
+func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destination, data *buf.Buffer) {
+	data.UDP = &dst
+
 	u.RLock()
 	conn, found := u.udpConns[src]
 	if found {
 		select {
-		case conn.egress <- &packet{
-			data: data,
-			dest: &dst,
-		}:
+		case conn.egress <- data:
 		default:
-			errors.LogDebug(context.Background(), "drop udp with size ", len(data), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full")
+			errors.LogDebug(context.Background(), "drop udp with size ", data.Len(), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full")
+			data.Release()
 		}
 		u.RUnlock()
 		return
@@ -60,7 +55,7 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
 
 	conn, found = u.udpConns[src]
 	if !found {
-		egress := make(chan *packet, 1024)
+		egress := make(chan *buf.Buffer, 1024)
 		conn = &udpConn{handler: u, egress: egress, src: src, dst: dst}
 		u.udpConns[src] = conn
 
@@ -69,20 +64,18 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
 
 	// send packet data to the egress channel, if it has buffer, or discard
 	select {
-	case conn.egress <- &packet{
-		data: data,
-		dest: &dst,
-	}:
+	case conn.egress <- data:
 	default:
-		errors.LogDebug(context.Background(), "drop udp with size ", len(data), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full 2")
+		errors.LogDebug(context.Background(), "drop udp with size ", data.Len(), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full 2")
+		data.Release()
 	}
 }
 
-func (u *udpConnectionHandler) connectionFinished(src net.Destination) {
+func (u *udpConnectionHandler) connectionFinished(conn *udpConn) {
 	u.Lock()
-	conn, found := u.udpConns[src]
-	if found {
-		delete(u.udpConns, src)
+	// Close runs twice per flow; a newer conn may already own this src.
+	if u.udpConns[conn.src] == conn {
+		delete(u.udpConns, conn.src)
 		close(conn.egress)
 	}
 	u.Unlock()
@@ -92,34 +85,28 @@ func (u *udpConnectionHandler) connectionFinished(src net.Destination) {
 type udpConn struct {
 	handler *udpConnectionHandler
 
-	egress chan *packet
+	egress chan *buf.Buffer
 	src    net.Destination
 	dst    net.Destination
 }
 
 func (c *udpConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	e, ok := <-c.egress
+	b, ok := <-c.egress
 	if !ok {
 		return nil, io.EOF
 	}
-
-	b := buf.New()
-	if _, err := b.Write(e.data); err != nil {
-		return nil, err
-	}
-	b.UDP = e.dest
-
 	return buf.MultiBuffer{b}, nil
 }
 
 // Read packets from the connection
 func (c *udpConn) Read(p []byte) (int, error) {
-	e, ok := <-c.egress
+	b, ok := <-c.egress
 	if !ok {
 		return 0, io.EOF
 	}
-	n := copy(p, e.data)
-	if n != len(e.data) {
+	defer b.Release()
+	n := copy(p, b.Bytes())
+	if n != int(b.Len()) {
 		return 0, io.ErrShortBuffer
 	}
 	return n, nil
@@ -129,7 +116,11 @@ func (c *udpConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	for i, b := range mb {
 		dst := c.dst
 		if b.UDP != nil {
-			dst = *b.UDP
+			if b.UDP.Address.Family().IsDomain() {
+				errors.LogError(context.Background(), "impossible domain packet ", b.UDP, " reply via original target ", dst)
+			} else {
+				dst = *b.UDP
+			}
 		}
 		err := c.handler.writePacket(b.Bytes(), dst, c.src)
 		if err != nil {
@@ -153,7 +144,7 @@ func (c *udpConn) Write(p []byte) (int, error) {
 }
 
 func (c *udpConn) Close() error {
-	c.handler.connectionFinished(c.src)
+	c.handler.connectionFinished(c)
 
 	return nil
 }

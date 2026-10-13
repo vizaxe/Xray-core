@@ -5,18 +5,16 @@ import (
 	"context"
 	go_errors "errors"
 	"fmt"
-	"os"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/geodata"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/features/dns"
 )
 
@@ -33,6 +31,7 @@ type DNS struct {
 	domainMatcher          geodata.DomainMatcher
 	matcherInfos           []*DomainMatcherInfo
 	checkSystem            bool
+	script                 *scriptEngine
 }
 
 // DomainMatcherInfo contains information attached to index returned by Server.domainMatcher.
@@ -88,7 +87,7 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 		return nil, errors.New("failed to create hosts").Base(err)
 	}
 
-	var defaultTag = config.Tag
+	defaultTag := config.Tag
 	if len(config.Tag) == 0 {
 		defaultTag = generateRandomTag()
 	}
@@ -141,7 +140,7 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 			serveExpiredTTL = *ns.ServeExpiredTTL
 		}
 
-		var tag = defaultTag
+		tag := defaultTag
 		if len(ns.Tag) > 0 {
 			tag = ns.Tag
 		}
@@ -171,6 +170,13 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 		clients = append(clients, NewLocalDNSClient(ipOption))
 	}
 
+	var script *scriptEngine
+	if config.Script != "" {
+		if script, err = newScriptEngine(config.Script); err != nil {
+			return nil, errors.New("failed to prepare DNS script").Base(err)
+		}
+	}
+
 	return &DNS{
 		hosts:                  hosts,
 		ipOption:               &ipOption,
@@ -182,6 +188,7 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 		disableFallbackIfMatch: config.DisableFallbackIfMatch,
 		enableParallelQuery:    config.EnableParallelQuery,
 		checkSystem:            checkSystem,
+		script:                 script,
 	}, nil
 }
 
@@ -192,11 +199,19 @@ func (*DNS) Type() interface{} {
 
 // Start implements common.Runnable.
 func (s *DNS) Start() error {
+	if s.script != nil {
+		if err := s.script.start(s); err != nil {
+			return errors.New("failed to initialize DNS script").Base(err)
+		}
+	}
 	return nil
 }
 
 // Close implements common.Closable.
 func (s *DNS) Close() error {
+	if s.script != nil {
+		s.script.close()
+	}
 	return nil
 }
 
@@ -214,6 +229,28 @@ func (s *DNS) IsOwnLink(ctx context.Context) bool {
 	return false
 }
 
+// MayUseSystemResolver reports whether any name server configured here could
+// still resolve through the system resolver. That is what happens when no name
+// server is configured at all, and it is also what a name server pointed at
+// "localhost" does. Callers that are about to redirect the system resolver need
+// to know, because a resolution path that reaches it would then loop back to
+// them.
+//
+// Any such server is enough: name servers can be selected per domain, so a
+// single local one makes some query reach the system resolver even when
+// independent upstreams are configured alongside it.
+func (s *DNS) MayUseSystemResolver() bool {
+	if len(s.clients) == 0 {
+		return true
+	}
+	for _, client := range s.clients {
+		if _, isLocal := client.server.(*LocalNameServer); isLocal {
+			return true
+		}
+	}
+	return false
+}
+
 // LookupIP implements dns.Client.
 func (s *DNS) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, error) {
 	// Normalize the FQDN form query
@@ -223,7 +260,7 @@ func (s *DNS) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, er
 	}
 
 	if s.checkSystem {
-		supportIPv4, supportIPv6 := checkRoutes()
+		supportIPv4, supportIPv6 := utils.CheckRoutes()
 		option.IPv4Enable = option.IPv4Enable && supportIPv4
 		option.IPv6Enable = option.IPv6Enable && supportIPv6
 	} else {
@@ -259,6 +296,9 @@ func (s *DNS) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, er
 	}
 
 	// Name servers lookup
+	if s.script != nil {
+		return s.script.query(domain, option)
+	}
 	if s.enableParallelQuery {
 		return s.parallelQuery(domain, option)
 	} else {
@@ -538,68 +578,4 @@ func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		return New(ctx, config.(*Config))
 	}))
-}
-
-func probeRoutes() (ipv4 bool, ipv6 bool) {
-	if conn, err := net.Dial("udp4", "192.33.4.12:53"); err == nil {
-		ipv4 = true
-		conn.Close()
-	}
-	if conn, err := net.Dial("udp6", "[2001:500:2::c]:53"); err == nil {
-		ipv6 = true
-		conn.Close()
-	}
-	return
-}
-
-var routeCache struct {
-	sync.Once
-	sync.RWMutex
-	expire     time.Time
-	ipv4, ipv6 bool
-}
-
-func checkRoutes() (bool, bool) {
-	if !isGUIPlatform {
-		routeCache.Once.Do(func() {
-			routeCache.ipv4, routeCache.ipv6 = probeRoutes()
-		})
-		return routeCache.ipv4, routeCache.ipv6
-	}
-
-	routeCache.RWMutex.RLock()
-	now := time.Now()
-	if routeCache.expire.After(now) {
-		routeCache.RWMutex.RUnlock()
-		return routeCache.ipv4, routeCache.ipv6
-	}
-	routeCache.RWMutex.RUnlock()
-
-	routeCache.RWMutex.Lock()
-	defer routeCache.RWMutex.Unlock()
-
-	now = time.Now()
-	if routeCache.expire.After(now) { // double-check
-		return routeCache.ipv4, routeCache.ipv6
-	}
-	routeCache.ipv4, routeCache.ipv6 = probeRoutes()    // ~2ms
-	routeCache.expire = now.Add(100 * time.Millisecond) // ttl
-	return routeCache.ipv4, routeCache.ipv6
-}
-
-var isGUIPlatform = detectGUIPlatform()
-
-func detectGUIPlatform() bool {
-	switch runtime.GOOS {
-	case "android", "ios", "windows", "darwin":
-		return true
-	case "linux", "freebsd", "openbsd":
-		if t := os.Getenv("XDG_SESSION_TYPE"); t == "wayland" || t == "x11" {
-			return true
-		}
-		if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
-			return true
-		}
-	}
-	return false
 }

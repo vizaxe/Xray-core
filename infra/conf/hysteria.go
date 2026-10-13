@@ -22,7 +22,6 @@ func (c *HysteriaClientConfig) Build() (proto.Message, error) {
 	}
 
 	config := &hysteria.ClientConfig{}
-	config.Version = c.Version
 	config.Server = &protocol.ServerEndpoint{
 		Address: c.Address.Build(),
 		Port:    uint32(c.Port),
@@ -39,12 +38,20 @@ type HysteriaUserConfig struct {
 
 type HysteriaServerConfig struct {
 	Version int32                 `json:"version"`
-	Users   []*HysteriaUserConfig `json:"clients"`
+	Users   []*HysteriaUserConfig `json:"users"`
+	Clients []*HysteriaUserConfig `json:"clients"`
 }
 
 func (c *HysteriaServerConfig) Build() (proto.Message, error) {
+	if c.Version != 2 {
+		return nil, errors.New("version != 2")
+	}
+
 	config := new(hysteria.ServerConfig)
 
+	if c.Clients != nil {
+		c.Users = c.Clients
+	}
 	if len(c.Users) > 0 {
 		config.Users = make([]*protocol.User, len(c.Users))
 		processUser := func(idx int) error {

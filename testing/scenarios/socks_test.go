@@ -66,9 +66,9 @@ func TestSocksBridgeTCP(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					Address:  net.NewIPOrDomain(dest.Address),
-					Port:     uint32(dest.Port),
-					Networks: []net.Network{net.Network_TCP},
+					RewriteAddress:  net.NewIPOrDomain(dest.Address),
+					RewritePort:     uint32(dest.Port),
+					AllowedNetworks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -143,9 +143,9 @@ func TestSocksWithHttpRequest(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					Address:  net.NewIPOrDomain(dest.Address),
-					Port:     uint32(dest.Port),
-					Networks: []net.Network{net.Network_TCP},
+					RewriteAddress:  net.NewIPOrDomain(dest.Address),
+					RewritePort:     uint32(dest.Port),
+					AllowedNetworks: []net.Network{net.Network_TCP},
 				}),
 			},
 		},
@@ -209,9 +209,9 @@ func TestSocksBridageUDP(t *testing.T) {
 						Listen:   net.NewIPOrDomain(net.LocalHostIP),
 					}),
 					ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-						Address:  net.NewIPOrDomain(dest.Address),
-						Port:     uint32(dest.Port),
-						Networks: []net.Network{net.Network_UDP},
+						RewriteAddress:  net.NewIPOrDomain(dest.Address),
+						RewritePort:     uint32(dest.Port),
+						AllowedNetworks: []net.Network{net.Network_UDP},
 					}),
 				},
 			},
@@ -226,6 +226,9 @@ func TestSocksBridageUDP(t *testing.T) {
 		if server != nil && WaitConnAvailableWithTest(t, testUDPConn(serverPort+1, 1024, time.Second*2)) {
 			defer CloseServer(server)
 			break
+		}
+		if server != nil {
+			CloseServer(server)
 		}
 		retry++
 		if retry > 5 {
@@ -243,9 +246,9 @@ func TestSocksBridageUDP(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					Address:  net.NewIPOrDomain(dest.Address),
-					Port:     uint32(dest.Port),
-					Networks: []net.Network{net.Network_UDP},
+					RewriteAddress:  net.NewIPOrDomain(dest.Address),
+					RewritePort:     uint32(dest.Port),
+					AllowedNetworks: []net.Network{net.Network_UDP},
 				}),
 			},
 		},
@@ -320,9 +323,9 @@ func TestSocksBridageUDPWithRouting(t *testing.T) {
 						Listen:   net.NewIPOrDomain(net.LocalHostIP),
 					}),
 					ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-						Address:  net.NewIPOrDomain(dest.Address),
-						Port:     uint32(dest.Port),
-						Networks: []net.Network{net.Network_UDP},
+						RewriteAddress:  net.NewIPOrDomain(dest.Address),
+						RewritePort:     uint32(dest.Port),
+						AllowedNetworks: []net.Network{net.Network_UDP},
 					}),
 				},
 			},
@@ -342,6 +345,9 @@ func TestSocksBridageUDPWithRouting(t *testing.T) {
 			defer CloseServer(server)
 			break
 		}
+		if server != nil {
+			CloseServer(server)
+		}
 		retry++
 		if retry > 5 {
 			t.Fatal("All attempts failed to start server")
@@ -358,9 +364,9 @@ func TestSocksBridageUDPWithRouting(t *testing.T) {
 					Listen:   net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					Address:  net.NewIPOrDomain(dest.Address),
-					Port:     uint32(dest.Port),
-					Networks: []net.Network{net.Network_UDP},
+					RewriteAddress:  net.NewIPOrDomain(dest.Address),
+					RewritePort:     uint32(dest.Port),
+					AllowedNetworks: []net.Network{net.Network_UDP},
 				}),
 			},
 		},

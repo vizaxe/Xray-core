@@ -277,6 +277,7 @@ func (w *VisionReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 				w.ob.CanSpliceCopy = 1
 			}
 		}
+		SuppressOuterCloseNotify(w.conn)
 		readerConn, readCounter, _ := UnwrapRawConn(w.conn)
 		w.directReadCounter = readCounter
 		w.Reader = buf.NewReader(readerConn)
@@ -340,6 +341,7 @@ func (w *VisionWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			// 	w.ob.CanSpliceCopy = 1
 			// }
 		}
+		SuppressOuterCloseNotify(w.conn)
 		rawConn, _, writerCounter := UnwrapRawConn(w.conn)
 		w.Writer = buf.NewWriter(rawConn)
 		w.directWriteCounter = writerCounter
@@ -669,6 +671,19 @@ func XtlsFilterTls(buffer buf.MultiBuffer, trafficState *TrafficState, ctx conte
 	}
 }
 
+type CloseNotifySuppressor interface {
+	SuppressCloseNotify()
+}
+
+// Close our local TLS conn instance might send a incorrect close_notify alert
+// if the XTLS direct copy mode is enabled and cause TLS BAD_RECORD_MAC on users' browser
+// Close the underlying connection directly to avoid this issue.
+func SuppressOuterCloseNotify(conn net.Conn) {
+	if suppressor, ok := stat.TryUnwrapStatsConn(conn).(CloseNotifySuppressor); ok {
+		suppressor.SuppressCloseNotify()
+	}
+}
+
 // UnwrapRawConn support unwrap encryption, stats, mask wrappers, tls, utls, reality, proxyproto, uds-wrapper conn and get raw tcp/uds conn from it
 func UnwrapRawConn(conn net.Conn) (net.Conn, stats.Counter, stats.Counter) {
 	var readCounter, writerCounter stats.Counter
@@ -743,7 +758,7 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
 	for {
 		inbound := session.InboundFromContext(ctx)
 		outbounds := session.OutboundsFromContext(ctx)
-		var splice = inbound.CanSpliceCopy == 1
+		splice := inbound.CanSpliceCopy == 1
 		for _, ob := range outbounds {
 			if ob.CanSpliceCopy != 1 {
 				splice = false

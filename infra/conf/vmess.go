@@ -31,10 +31,6 @@ func (a *VMessAccount) Build() *vmess.Account {
 		st = protocol.SecurityType_CHACHA20_POLY1305
 	case "auto":
 		st = protocol.SecurityType_AUTO
-	case "none":
-		st = protocol.SecurityType_NONE
-	case "zero":
-		st = protocol.SecurityType_ZERO
 	default:
 		st = protocol.SecurityType_AUTO
 	}
@@ -59,7 +55,8 @@ func (c *VMessDefaultConfig) Build() *inbound.DefaultConfig {
 }
 
 type VMessInboundConfig struct {
-	Users    []json.RawMessage   `json:"clients"`
+	Users    []json.RawMessage   `json:"users"`
+	Clients  []json.RawMessage   `json:"clients"`
 	Defaults *VMessDefaultConfig `json:"default"`
 }
 
@@ -73,6 +70,9 @@ func (c *VMessInboundConfig) Build() (proto.Message, error) {
 		config.Default = c.Defaults.Build()
 	}
 
+	if c.Clients != nil {
+		c.Users = c.Clients
+	}
 	config.User = make([]*protocol.User, len(c.Users))
 	processUser := func(idx int) error {
 		rawData := c.Users[idx]
