@@ -141,10 +141,9 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		}
 	}
 
-	if dest.Network == net.Network_UNIX {
-		udsAddr := net.UnixAddr{Name: dest.NetAddr(), Net: "unix"}
-		return dialer.DialContext(ctx, "unix", udsAddr.String())
-	}
+	// 这里无需为 UNIX 单独分支：Network.SystemString() 对 Network_UNIX 返回 "unix"，
+	// Destination.NetAddr() 对 UNIX 返回纯路径字符串（见 common/net/network.go 与
+	// common/net/destination.go），二者组合出的调用与专用分支完全等价。
 	return dialer.DialContext(ctx, dest.Network.SystemString(), dest.NetAddr())
 }
 

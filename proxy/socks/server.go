@@ -61,9 +61,10 @@ func (s *Server) policy() policy.Session {
 func (s *Server) Network() []net.Network {
 	// 额外声明 UNIX：proxyman 依据该列表决定是否为本 inbound 创建
 	// Unix Domain Socket 监听 worker（见 app/proxyman/inbound/always.go），
-	// 并在 UDS 连接到达时以 net.Network_UNIX 调用 Process，从而走到 processUNIX。
-	// 这里不再声明 UDP：UDP ASSOCIATE 已改由 Handshake 返回的 TempUDPConn 在
-	// 关联 TCP 连接内承载，若声明 UDP 会让 udpWorker 落入 Process 的 default 分支。
+	// 并在 UDS 连接到达时以 net.Network_UNIX 调用 Process。
+	// UDS 连接与 TCP 连接共用同一条处理路径，仅在取本端地址时区分类型。
+	// 这里不声明 UDP：UDP ASSOCIATE 由 Handshake 返回的 TempUDPConn 在关联
+	// TCP 连接内承载，声明 UDP 反而会让 udpWorker 落入 Process 的 default 分支。
 	return []net.Network{net.Network_TCP, net.Network_UNIX}
 }
 
@@ -80,7 +81,9 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 
 	switch network {
-	case net.Network_TCP:
+	case net.Network_TCP, net.Network_UNIX:
+		// TCP 与 Unix Domain Socket 连接共用同一套处理流程（上游 http/vless/trojan
+		// 等 inbound 也是这一范式），两者差异只在 processTCP 内部取本端地址时体现。
 		firstbyte := make([]byte, 1)
 		if n, err := conn.Read(firstbyte); n == 0 {
 			if goerrors.Is(err, io.EOF) {
@@ -94,14 +97,6 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			return s.httpServer.ProcessWithFirstbyte(ctx, network, conn, dispatcher, firstbyte...)
 		}
 		return s.processTCP(ctx, conn, dispatcher, firstbyte)
-	case net.Network_UNIX:
-		firstbyte := make([]byte, 1)
-		conn.Read(firstbyte)
-		if firstbyte[0] != 5 && firstbyte[0] != 4 { // Check if it is Socks5/4/4a
-			errors.LogDebug(ctx, "Not Socks request, try to parse as HTTP request")
-			return s.httpServer.ProcessWithFirstbyte(ctx, network, conn, dispatcher, firstbyte...)
-		}
-		return s.processUNIX(ctx, conn, dispatcher, firstbyte)
 	default:
 		return errors.New("unknown network: ", network)
 	}
@@ -118,11 +113,24 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 		return errors.New("inbound gateway not specified")
 	}
 
+	// localAddress 会作为 UDP ASSOCIATE 响应里的本端地址回填（见 protocol.go），
+	// 而 TCP 与 Unix Domain Socket 连接的 LocalAddr 类型并不相同：前者有 IP，
+	// 后者只有路径。这里按实际类型分派，避免对 UDS 连接做 *net.TCPAddr 强转而 panic。
+	var localAddress net.Address = net.AnyIP
+	switch addr := conn.LocalAddr().(type) {
+	case *net.TCPAddr:
+		localAddress = net.IPAddress(addr.IP)
+	default:
+		if addr != nil {
+			localAddress = net.DomainAddress(addr.String())
+		}
+	}
+
 	svrSession := &ServerSession{
 		config:       s.config,
 		address:      inbound.Gateway.Address,
 		port:         inbound.Gateway.Port,
-		localAddress: net.IPAddress(conn.LocalAddr().(*net.TCPAddr).IP),
+		localAddress: localAddress,
 	}
 
 	// Firstbyte is for forwarded conn from SOCKS inbound
@@ -296,108 +304,6 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			udpServer.Dispatch(currentPacketCtx, *dest, payload)
 		}
 	}
-}
-
-func (s *Server) processUNIX(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, firstbyte []byte) error {
-	plcy := s.policy()
-	if err := conn.SetReadDeadline(time.Now().Add(plcy.Timeouts.Handshake)); err != nil {
-		errors.LogInfoInner(ctx, err, "failed to set deadline")
-	}
-
-	inbound := session.InboundFromContext(ctx)
-	if inbound == nil || !inbound.Gateway.IsValid() {
-		return errors.New("inbound gateway not specified")
-	}
-
-	svrSession := &ServerSession{
-		config:       s.config,
-		address:      inbound.Gateway.Address,
-		port:         inbound.Gateway.Port,
-		localAddress: net.DomainAddress(conn.LocalAddr().String()),
-	}
-
-	// Firstbyte is for forwarded conn from SOCKS inbound
-	// Because it needs first byte to choose protocol
-	// We need to add it back
-	reader := &buf.BufferedReader{
-		Reader: buf.NewReader(conn),
-		Buffer: buf.MultiBuffer{buf.FromBytes(firstbyte)},
-	}
-	request, tempUDPConn, err := svrSession.Handshake(reader, conn)
-	defer common.CloseIfExists(tempUDPConn)
-	if err != nil {
-		if inbound.Source.IsValid() {
-			log.Record(&log.AccessMessage{
-				From:   inbound.Source,
-				To:     "",
-				Status: log.AccessRejected,
-				Reason: err,
-			})
-		}
-		return errors.New("failed to read request").Base(err)
-	}
-	if request.User != nil {
-		inbound.User.Email = request.User.Email
-	}
-
-	if err := conn.SetReadDeadline(time.Time{}); err != nil {
-		errors.LogInfoInner(ctx, err, "failed to clear deadline")
-	}
-
-	if request.Command == protocol.RequestCommandTCP {
-		dest := request.Destination()
-		errors.LogInfo(ctx, "TCP Connect request to ", dest)
-		if inbound.Source.IsValid() {
-			ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
-				From:   inbound.Source,
-				To:     dest,
-				Status: log.AccessAccepted,
-				Reason: "",
-			})
-		}
-
-		if inbound.CanSpliceCopy == 2 {
-			inbound.CanSpliceCopy = 1
-		}
-		if err := dispatcher.DispatchLink(ctx, dest, &transport.Link{
-			Reader: reader,
-			Writer: buf.NewWriter(conn)},
-		); err != nil {
-			return errors.New("failed to dispatch request").Base(err)
-		}
-		return nil
-	}
-
-	if request.Command == protocol.RequestCommandUDP {
-		// UDP ASSOCIATE：跟随 main 的 TempUDPConn 机制。
-		// Handshake 阶段已按请求里的地址/端口准备好转发用的 UDP 连接，
-		// 这里只需把它接进 UDP payload 分发循环，并让关联的 TCP 连接作为保活通道：
-		// 关联 TCP 关闭则 UDP 一并结束，UDP 空闲超时则 TCP 也随之关闭。
-		if tempUDPConn == nil {
-			return errors.New("UDP associate with listen port failed")
-		}
-		tempUDPConn.SetTimeout(plcy.Timeouts.ConnectionIdle)
-		var udpConn stat.Connection = tempUDPConn
-		if counters, ok := conn.(*stat.CounterConnection); ok {
-			udpConn = &stat.CounterConnection{
-				Connection:   tempUDPConn,
-				ReadCounter:  counters.ReadCounter,
-				WriteCounter: counters.WriteCounter,
-			}
-		}
-		errCh := make(chan error, 1)
-		go func() {
-			errCh <- s.handleUDPPayload(ctx, udpConn, dispatcher)
-		}()
-		// Associated TCP keeps the UDP alive
-		// Close UDP if TCP connection is closed
-		// Or Close TCP if UDP is idle timeout
-		io.Copy(buf.DiscardBytes, conn)
-		tempUDPConn.Close()
-		return <-errCh
-	}
-
-	return nil
 }
 
 func init() {

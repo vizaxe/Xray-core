@@ -3,16 +3,38 @@ package dns
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/url"
 	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/dns"
 	dns_feature "github.com/xtls/xray-core/features/dns"
+	"github.com/xtls/xray-core/transport/internet"
 )
+
+// NewUnixTCPNameServer creates DNS over TCP (RFC 7766) client via Unix Domain Socket
+// for local resolving. 与 NewUnixUDPNameServer 的差别只在传输层：本函数复用上游
+// TCPNameServer 的报文/缓存逻辑，仅把目标地址换成 UDS 路径。
+func NewUnixTCPNameServer(url *url.URL, disableCache bool, serveStale bool, serveExpiredTTL uint32, clientIP net.IP) (*TCPNameServer, error) {
+	// url.Path 形如 /var/run/dns.sock；抽象命名空间（如 @dns.sock）同样由
+	// ParseAddress + UnixDestination 承接，无需在此特殊处理。
+	dest := net.UnixDestination(net.ParseAddress(url.Path))
+	s := &TCPNameServer{
+		cacheController: NewCacheController("TCPUNIX//"+url.Path, disableCache, serveStale, serveExpiredTTL),
+		destination:     &dest,
+		clientIP:        clientIP,
+	}
+	// 与 tcp+local:// 一样走本机系统拨号；UDS 由 DefaultSystemDialer 统一处理，
+	// 这里不必也不能再分支出专用逻辑。
+	s.dial = func(ctx context.Context) (net.Conn, error) {
+		return internet.DialSystem(ctx, dest, nil)
+	}
+	errors.LogInfo(context.Background(), "DNS: created Unix Domain Socket TCP client initialized for ", url.String())
+	return s, nil
+}
 
 // UnixUDPNameServer implemented UDP DNS over Unix Domain Socket.
 type UnixUDPNameServer struct {
